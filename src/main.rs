@@ -5,7 +5,7 @@ const SC_ADD: i32 = 0x1;
 const SC_LIST: i32 = 0x2;
 const _SC_REMOVE: i32 = 0x3;
 const SC_GETNSWP: i32 = 0x4;
-const _SC_AINFO: i32 = 0x5;
+const SC_AINFO: i32 = 0x5;
 
 // swapctl(2)
 extern "C" {
@@ -67,9 +67,15 @@ impl Default for swapent {
 // and eventually, we should send an ereport.
 const N_SWAPENTS: usize = 3;
 
+unsafe fn swapctl_cmd<T>(cmd: i32, data: Option<*mut T>) -> std::io::Result<u32> {
+    assert!(cmd >= 0 && cmd <= SC_AINFO, "invalid swapctl cmd: {cmd}");
 
-fn swapctl_cmd<T>(cmd: i32, data: *mut T) -> std::io::Result<u32> {
-    let res = unsafe { swapctl(cmd, data as *mut libc::c_void) };
+    let ptr = match data {
+        Some(v) => v as *mut libc::c_void,
+        None => std::ptr::null_mut(),
+    };
+
+    let res = swapctl(cmd, ptr);
     if res == -1 {
         // TODO: log message
         // TODO: custom error
@@ -79,10 +85,14 @@ fn swapctl_cmd<T>(cmd: i32, data: *mut T) -> std::io::Result<u32> {
     Ok(res as u32)
 }
 
+pub fn swapctl_get_num_devices() -> std::io::Result<u32> {
+    unsafe { swapctl_cmd::<i32>(SC_GETNSWP, None) }
+}
+
 // TODO: probably want to return a real Rust struct here
 pub fn swapctl_list() -> std::io::Result<(usize, swaptbl)> {
     // statically allocate the array of swapents for SC_LIST
-    // 
+    //
     // see comment on `N_SWAPENTS` for details
     const MAXPATHLEN: usize = libc::PATH_MAX as usize;
     let p1 = [0i8; MAXPATHLEN];
@@ -109,7 +119,7 @@ pub fn swapctl_list() -> std::io::Result<(usize, swaptbl)> {
         swt_ent: entries,
     };
 
-    let n_devices = swapctl_cmd(SC_LIST, &mut list_req)?;
+    let n_devices = unsafe { swapctl_cmd(SC_LIST, Some(&mut list_req))? };
 
     Ok((n_devices as usize, list_req))
 }
@@ -120,13 +130,17 @@ pub fn swapctl_add(name: &str, start: u64, length: u64) -> std::io::Result<()> {
     assert_eq!(start % 512, 0, "start not divisible by 512: {}", start);
     assert_eq!(length % 512, 0, "length not divisible by 512: {}", length);
 
-    let add_req = swapres {
-        sr_name: name as *const libc::c_char,
+    // TODO: probably a real error here
+    let n = std::ffi::CString::new(name).unwrap();
+
+    let mut add_req = swapres {
+        sr_name: n.as_ptr(),
         sr_start: start as libc::off_t,
         sr_length: length as libc::off_t,
     };
+    println!("add_req: {:?}", add_req);
 
-    let res = swapctl_cmd(SC_ADD, &mut add_req)?;
+    let res = unsafe { swapctl_cmd(SC_ADD, Some(&mut add_req)) }?;
     assert!(res == 0);
 
     Ok(())
@@ -147,4 +161,8 @@ fn main() {
             p, e.ste_start, e.ste_length, e.ste_pages, e.ste_free, e.ste_flags
         );
     }
+
+    // TODO: how to get this path for the zvol?
+    //let add = swapctl_add("/dev/zvol/dsk/rpool/testswap", 0, 0);
+    println!("add = {:?}", add);
 }
